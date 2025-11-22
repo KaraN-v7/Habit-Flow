@@ -1,5 +1,5 @@
 // App.tsx
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState } from 'react';
 import Sidebar from './components/Sidebar';
 import DailyView from './components/DailyView';
 import WeeklyView from './components/WeeklyView';
@@ -40,9 +40,6 @@ const App: React.FC = () => {
     return false;
   });
 
-  // For cross-device sync: we use a window focus listener
-  const focusListenerRef = useRef<((this: Window, ev: FocusEvent) => any) | null>(null);
-
   useEffect(() => {
     const root = document.documentElement;
     if (isDarkMode) {
@@ -68,11 +65,10 @@ const App: React.FC = () => {
     setSelectedDate(newDate);
   };
 
-  // -------------- DATA LOADING & SYNC --------------
-
+  // --------- Load user data from Supabase ---------
   const loadUserData = async (uid: string) => {
     try {
-      // Load Habits
+      // Habits
       const { data: habitsData, error: habitsError } = await supabase
         .from('habits')
         .select('*')
@@ -100,7 +96,7 @@ const App: React.FC = () => {
         setHabits(mappedHabits);
       }
 
-      // Load Chapters
+      // Chapters
       const { data: chaptersData, error: chaptersError } = await supabase
         .from('chapters')
         .select('*')
@@ -122,116 +118,31 @@ const App: React.FC = () => {
     }
   };
 
-  const startSync = (uid: string) => {
-    stopSync(); // clear old listener first
-
-    const onFocus = () => {
-      if (uid) {
-        loadUserData(uid);
-      }
-    };
-
-    window.addEventListener('focus', onFocus);
-    focusListenerRef.current = onFocus;
-  };
-
-  const stopSync = () => {
-    if (focusListenerRef.current) {
-      window.removeEventListener('focus', focusListenerRef.current);
-      focusListenerRef.current = null;
-    }
-  };
-
-  const clearSessionState = () => {
-    stopSync();
-    setUser(null);
-    setUserId(null);
-    setHabits([]);
-    setChapters([]);
-    localStorage.removeItem('habitflow_session_user');
-    setView('daily');
-  };
-
-  // -------------- PROFILE HANDLING (GOOGLE-ONLY) --------------
-
+  // --------- Ensure profile row exists ---------
   const ensureProfileAndLoad = async (uid: string, supaUser: any) => {
     try {
-      // 1. Try by id
-      const { data: byId, error: byIdError } = await supabase
+      // Try to fetch profile by id
+      const { data: profile, error } = await supabase
         .from('users')
         .select('*')
         .eq('id', uid)
-        .single();
+        .maybeSingle();
 
-      let profile = byId;
+      let finalProfile = profile;
 
-      if (byIdError && byIdError.code !== 'PGRST116') {
-        console.warn('Error fetching user profile by id', byIdError);
+      if (error) {
+        console.warn('Error fetching profile by id', error);
       }
 
-      // 2. If not found, try by email (merge legacy account if same email)
-      if (!profile) {
-        const email = supaUser.email ?? null;
-        if (email) {
-          const { data: usersByEmail, error: byEmailError } = await supabase
-            .from('users')
-            .select('*')
-            .eq('email', email);
-
-          if (byEmailError) {
-            console.warn('Error fetching user by email', byEmailError);
-          } else if (usersByEmail && usersByEmail.length > 0) {
-            // Legacy user exists with same email but different id
-            const legacy = usersByEmail[0];
-            const oldId = legacy.id;
-
-            if (oldId && oldId !== uid) {
-              console.log(`Merging legacy user ${oldId} into new auth user ${uid}`);
-
-              // Move habits
-              const { error: habErr } = await supabase
-                .from('habits')
-                .update({ user_id: uid })
-                .eq('user_id', oldId);
-              if (habErr) console.error('Error migrating habits', habErr);
-
-              // Move chapters
-              const { error: chapErr } = await supabase
-                .from('chapters')
-                .update({ user_id: uid })
-                .eq('user_id', oldId);
-              if (chapErr) console.error('Error migrating chapters', chapErr);
-
-              // Delete old user row
-              const { error: delErr } = await supabase
-                .from('users')
-                .delete()
-                .eq('id', oldId);
-              if (delErr) console.error('Error deleting old user row', delErr);
-            }
-          }
-        }
-      }
-
-      // 3. After potential merge, fetch again by id
-      if (!profile) {
-        const { data: byIdAfterMerge } = await supabase
-          .from('users')
-          .select('*')
-          .eq('id', uid)
-          .single();
-        profile = byIdAfterMerge;
-      }
-
-      // 4. If still no profile, create a new one
-      if (!profile) {
+      // If no profile, create one
+      if (!finalProfile) {
         const meta = supaUser.user_metadata || {};
         const email = supaUser.email ?? null;
         const usernameGuess =
           (meta.full_name && meta.full_name.replace(/\s+/g, '').toLowerCase()) ||
           (email ? email.split('@')[0] : `user-${uid.slice(0, 8)}`);
 
-        const { data: inserted, error: insErr } = await supabase
+        const { data: inserted, error: insertError } = await supabase
           .from('users')
           .insert([{
             id: uid,
@@ -245,33 +156,29 @@ const App: React.FC = () => {
           .select()
           .single();
 
-        if (insErr) {
-          console.error('Failed to insert profile', insErr);
+        if (insertError) {
+          console.error('Failed to insert profile', insertError);
           return;
         }
-        profile = inserted;
+
+        finalProfile = inserted;
       }
 
-      if (profile) {
+      if (finalProfile) {
         const userProfile: User = {
-          username: profile.username,
-          joinedAt: profile.joined_at,
-          badges: profile.badges || [],
-          totalStreakPoints: profile.total_streak_points || 0,
-          pin: profile.pin ?? undefined,       // not used anymore, just matches type
-          avatar: profile.avatar ?? undefined,
-          email: profile.email ?? undefined,
-          phone: profile.phone ?? undefined
+          username: finalProfile.username,
+          joinedAt: finalProfile.joined_at,
+          badges: finalProfile.badges || [],
+          totalStreakPoints: finalProfile.total_streak_points || 0,
+          pin: finalProfile.pin ?? undefined,         // not used, kept for type
+          avatar: finalProfile.avatar ?? undefined,
+          email: finalProfile.email ?? undefined,
+          phone: finalProfile.phone ?? undefined
         };
 
         setUser(userProfile);
         setUserId(uid);
         localStorage.setItem('habitflow_session_user', JSON.stringify({ user: userProfile, id: uid }));
-
-        // start focus-based sync
-        startSync(uid);
-
-        // load data
         await loadUserData(uid);
       }
     } catch (err) {
@@ -279,13 +186,12 @@ const App: React.FC = () => {
     }
   };
 
-  // -------------- AUTH EFFECT (GOOGLE OAUTH) --------------
-
+  // --------- Auth setup (Google OAuth) ---------
   useEffect(() => {
     (async () => {
       try {
         if (typeof window !== 'undefined') {
-          // Handle tokens returned in URL after Google redirect
+          // Handle redirect back from Google/Supabase (tokens in URL)
           const hasHash = window.location.hash?.includes('access_token');
           const hasQuery = window.location.search?.includes('access_token');
           if (hasHash || hasQuery) {
@@ -297,25 +203,25 @@ const App: React.FC = () => {
             window.history.replaceState({}, document.title, cleanUrl);
           }
         }
-      } catch (err) {
-        console.error('Error while processing OAuth redirect', err);
-      }
 
-      // Initial session check
-      const { data } = await supabase.auth.getSession();
-      const session = data.session;
-      if (session?.user) {
-        await ensureProfileAndLoad(session.user.id, session.user);
-      } else {
-        // Fallback: use local cache if any (for quick UI)
-        const stored = localStorage.getItem('habitflow_session_user');
-        if (stored) {
-          const parsed = JSON.parse(stored);
-          setUser(parsed.user);
-          setUserId(parsed.id);
-          startSync(parsed.id);
-          loadUserData(parsed.id);
+        // Check current session
+        const { data } = await supabase.auth.getSession();
+        const session = data.session;
+
+        if (session?.user) {
+          await ensureProfileAndLoad(session.user.id, session.user);
+        } else {
+          // fallback to cached user (fast UI)
+          const stored = localStorage.getItem('habitflow_session_user');
+          if (stored) {
+            const parsed = JSON.parse(stored);
+            setUser(parsed.user);
+            setUserId(parsed.id);
+            loadUserData(parsed.id);
+          }
         }
+      } catch (err) {
+        console.error('Auth init error', err);
       }
     })();
 
@@ -324,9 +230,9 @@ const App: React.FC = () => {
         try {
           if (event === 'SIGNED_IN' && session?.user) {
             await ensureProfileAndLoad(session.user.id, session.user);
-          } else if (event === 'SIGNED_OUT') {
-            clearSessionState();
           }
+          // IMPORTANT: we do NOT auto-handle SIGNED_OUT here
+          // to avoid unexpected logouts. We only logout when user clicks.
         } catch (err) {
           console.error('auth state change error', err);
         }
@@ -335,7 +241,6 @@ const App: React.FC = () => {
 
     return () => {
       subscription.unsubscribe();
-      stopSync();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -346,7 +251,12 @@ const App: React.FC = () => {
     } catch (err) {
       console.error('signOut error', err);
     } finally {
-      clearSessionState();
+      setUser(null);
+      setUserId(null);
+      setHabits([]);
+      setChapters([]);
+      localStorage.removeItem('habitflow_session_user');
+      setView('daily');
       try {
         window.location.replace(window.location.origin);
       } catch {
@@ -366,7 +276,7 @@ const App: React.FC = () => {
     }).eq('id', userId);
   };
 
-  // -------------- HABITS & CHAPTERS (same as before, no PIN) --------------
+  // --------- Habit & chapter logic (same as before) ---------
 
   const addRecurringHabit = async (
     name: string,
@@ -748,10 +658,10 @@ const App: React.FC = () => {
     }
   };
 
-  // -------------- RENDER --------------
+  // --------- Render ---------
 
   if (!user) {
-    return <Auth />; // Google-only login screen
+    return <Auth />; // Google-only sign in page
   }
 
   return (
