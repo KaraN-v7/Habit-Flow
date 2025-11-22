@@ -25,6 +25,10 @@ const App: React.FC = () => {
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [deleteContext, setDeleteContext] = useState<{ habit: Habit, source: 'daily'|'weekly'|'monthly', date?: string } | null>(null);
+  // near your other useState declarations
+const pollingRef = React.useRef<number | null>(null);
+const focusListenerRef = React.useRef<((this: Window, ev: FocusEvent) => any) | null>(null);
+
 
   // Dark mode
   const [isDarkMode, setIsDarkMode] = useState(() => {
