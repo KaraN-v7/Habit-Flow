@@ -1,5 +1,5 @@
-import React from 'react';
-import { LayoutDashboard, Calendar, BarChart2, Sparkles, Plus, CheckSquare, LogOut, User as UserIcon, Moon, Sun, Settings, BookOpen } from 'lucide-react';
+import React, { useState } from 'react';
+import { LayoutDashboard, Calendar, BarChart2, Sparkles, CheckSquare, LogOut, User as UserIcon, Moon, Sun, Settings, BookOpen, Plus, Menu, X } from 'lucide-react';
 import { ViewMode, User } from '../types';
 
 interface SidebarProps {
@@ -16,6 +16,8 @@ interface SidebarProps {
 const Sidebar: React.FC<SidebarProps> = ({ 
   currentView, setView, onAddHabit, user, onLogout, isDarkMode, toggleTheme, onOpenProfile 
 }) => {
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
   const navItems = [
     { id: 'daily', label: 'Daily Focus', icon: CheckSquare },
     { id: 'weekly', label: 'Weekly Grid', icon: Calendar },
@@ -25,17 +27,31 @@ const Sidebar: React.FC<SidebarProps> = ({
     { id: 'coach', label: 'Exam Coach', icon: Sparkles },
   ];
 
-  return (
-    <div className="w-full md:w-64 bg-[#F7F7F5] dark:bg-[#191919] border-r border-[#E0E0E0] dark:border-[#333] flex-shrink-0 flex flex-col h-full transition-colors duration-300">
-      <div className="p-4 md:p-6 flex-1">
+  const handleNavClick = (viewId: ViewMode) => {
+    setView(viewId);
+    setIsMobileMenuOpen(false);
+  };
+
+  // Sidebar Content Component
+  const SidebarContent = () => (
+    <div className="flex flex-col h-full">
+      <div className="p-4 md:p-6 flex-1 overflow-y-auto custom-scrollbar">
         <div className="flex items-center justify-between mb-8">
             <div className="flex items-center gap-2 font-bold text-lg text-[#37352F] dark:text-[#E0E0E0]">
-            <div className="w-6 h-6 bg-black dark:bg-white text-white dark:text-black rounded flex items-center justify-center text-sm shadow-sm">J</div>
-            JEEFlow
+              <div className="w-6 h-6 bg-black dark:bg-white text-white dark:text-black rounded flex items-center justify-center text-sm shadow-sm">J</div>
+              JEEFlow
             </div>
+            {/* Close button for mobile drawer */}
+            <button 
+              onClick={() => setIsMobileMenuOpen(false)}
+              className="md:hidden p-2 text-[#787774] hover:text-[#37352F] dark:hover:text-white"
+            >
+              <X size={20} />
+            </button>
+            {/* Theme toggle for Desktop */}
             <button 
                 onClick={toggleTheme}
-                className="p-2 rounded-md hover:bg-[#EFEFED] dark:hover:bg-[#333] text-[#787774] dark:text-[#AAA] transition-colors"
+                className="hidden md:block p-2 rounded-md hover:bg-[#EFEFED] dark:hover:bg-[#333] text-[#787774] dark:text-[#AAA] transition-colors"
             >
                 {isDarkMode ? <Sun size={18} /> : <Moon size={18} />}
             </button>
@@ -80,7 +96,10 @@ const Sidebar: React.FC<SidebarProps> = ({
         )}
         
         <button 
-          onClick={onAddHabit}
+          onClick={() => {
+            onAddHabit();
+            setIsMobileMenuOpen(false);
+          }}
           className="w-full flex items-center gap-2 bg-white dark:bg-[#2C2C2C] hover:bg-[#EFEFED] dark:hover:bg-[#383838] border border-[#D0D0D0] dark:border-[#555] text-[#37352F] dark:text-[#E0E0E0] px-3 py-2 rounded-md text-sm font-medium transition-colors shadow-sm mb-6"
         >
           <Plus size={16} />
@@ -94,7 +113,7 @@ const Sidebar: React.FC<SidebarProps> = ({
             return (
               <button
                 key={item.id}
-                onClick={() => setView(item.id as ViewMode)}
+                onClick={() => handleNavClick(item.id as ViewMode)}
                 className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
                   isActive 
                     ? 'bg-[#EFEFED] dark:bg-[#333] text-[#37352F] dark:text-white' 
@@ -119,6 +138,50 @@ const Sidebar: React.FC<SidebarProps> = ({
         </button>
       </div>
     </div>
+  );
+
+  return (
+    <>
+      {/* Mobile Header (Visible only on small screens) */}
+      <div className="md:hidden w-full bg-[#F7F7F5] dark:bg-[#191919] border-b border-[#E0E0E0] dark:border-[#333] p-4 flex items-center justify-between flex-shrink-0 z-20 relative">
+         <div className="flex items-center gap-2 font-bold text-lg text-[#37352F] dark:text-[#E0E0E0]">
+            <div className="w-6 h-6 bg-black dark:bg-white text-white dark:text-black rounded flex items-center justify-center text-sm shadow-sm">J</div>
+            JEEFlow
+         </div>
+         <div className="flex items-center gap-3">
+            <button 
+                onClick={toggleTheme}
+                className="p-2 rounded-md hover:bg-[#EFEFED] dark:hover:bg-[#333] text-[#787774] dark:text-[#AAA] transition-colors"
+            >
+                {isDarkMode ? <Sun size={18} /> : <Moon size={18} />}
+            </button>
+            <button 
+                onClick={() => setIsMobileMenuOpen(true)} 
+                className="p-2 text-[#37352F] dark:text-[#E0E0E0] hover:bg-[#EFEFED] dark:hover:bg-[#333] rounded-md transition-colors"
+            >
+                <Menu size={24} />
+            </button>
+         </div>
+      </div>
+
+      {/* Mobile Overlay Backdrop */}
+      {isMobileMenuOpen && (
+        <div 
+          className="fixed inset-0 bg-black/50 z-40 md:hidden backdrop-blur-sm transition-opacity"
+          onClick={() => setIsMobileMenuOpen(false)}
+        />
+      )}
+
+      {/* Sidebar Drawer (Slide-out on mobile, Static on Desktop) */}
+      <div className={`
+        fixed md:static inset-y-0 left-0 z-50 w-64 transform transition-transform duration-300 ease-in-out
+        ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}
+        md:translate-x-0 flex-shrink-0
+        bg-[#F7F7F5] dark:bg-[#191919] border-r border-[#E0E0E0] dark:border-[#333]
+      `}>
+        <SidebarContent />
+      </div>
+    </>
   );
 };
 
