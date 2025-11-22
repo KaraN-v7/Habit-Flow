@@ -1,3 +1,4 @@
+// components/Auth.tsx
 import React, { useState } from 'react';
 import { supabase } from '../services/supabase';
 
@@ -10,13 +11,14 @@ const Auth: React.FC = () => {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
-          redirectTo: window.location.origin,
-        },
+          // Use the current origin so it works in dev and production
+          redirectTo: window.location.origin
+        }
       });
       if (error) throw error;
-      // Supabase redirects to Google automatically
+      // Supabase will redirect the browser to Google; no further action here.
     } catch (err: any) {
-      alert('Error logging in with Google: ' + (err.message || String(err)));
+      alert('Google sign-in failed: ' + (err.message || String(err)));
       setLoading(false);
     }
   };
@@ -29,9 +31,7 @@ const Auth: React.FC = () => {
             H
           </div>
           <h1 className="text-2xl font-bold text-[#37352F]">HabitFlow</h1>
-          <p className="text-[#787774] mt-2 text-center">
-            Sign in with Google to sync your habits on any device.
-          </p>
+          <p className="text-[#787774] mt-2 text-center">Sign in with Google to sync your habits across devices.</p>
         </div>
 
         <button
@@ -40,8 +40,12 @@ const Auth: React.FC = () => {
           className="w-full bg-white border border-[#E0E0E0] hover:bg-[#FAFAFA] text-[#37352F] font-medium py-3 rounded-lg transition-all flex items-center justify-center gap-3 shadow-sm mb-6"
         >
           <img src="https://www.svgrepo.com/show/475656/google-color.svg" className="w-5 h-5" alt="Google" />
-          <span>{loading ? 'Connecting…' : 'Continue with Google'}</span>
+          <span>{loading ? 'Connecting...' : 'Continue with Google'}</span>
         </button>
+
+        <p className="text-xs text-center text-[#9B9B9B]">
+          By signing in you agree to store your habits in the cloud (Supabase) so they’re available on any device.
+        </p>
       </div>
     </div>
   );
