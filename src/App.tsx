@@ -66,8 +66,9 @@ const App: React.FC = () => {
     setSelectedDate(newDate);
   };
 
-  // Check for existing session on mount
+  // Check for existing session on mount AND listen for Auth changes (Google Login)
   useEffect(() => {
+    // 1. Check Local Storage first (for fast PIN login)
     const storedSession = localStorage.getItem('habitflow_session_user');
     if (storedSession) {
         const parsed = JSON.parse(storedSession);
@@ -75,6 +76,43 @@ const App: React.FC = () => {
         setUserId(parsed.id);
         loadUserData(parsed.id);
     }
+
+    // 2. Listen for Supabase Auth events (Google Redirects)
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+        if (event === 'SIGNED_IN' && session) {
+            // User logged in via Google/Auth
+            const uid = session.user.id;
+            
+            // Fetch the custom user profile that corresponds to this Auth user
+            const { data: customUser, error } = await supabase
+                .from('users')
+                .select('*')
+                .eq('id', uid)
+                .single();
+
+            if (customUser && !error) {
+                const userProfile: User = {
+                    username: customUser.username,
+                    joinedAt: customUser.joined_at,
+                    badges: customUser.badges || [],
+                    totalStreakPoints: customUser.total_streak_points || 0,
+                    pin: customUser.pin,
+                    avatar: customUser.avatar,
+                    email: customUser.email,
+                    phone: customUser.phone
+                };
+                
+                setUser(userProfile);
+                setUserId(uid);
+                localStorage.setItem('habitflow_session_user', JSON.stringify({ user: userProfile, id: uid }));
+                loadUserData(uid);
+            }
+        } else if (event === 'SIGNED_OUT') {
+            handleLogout();
+        }
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
 
   const loadUserData = async (uid: string) => {
@@ -199,7 +237,8 @@ const App: React.FC = () => {
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
     setUser(null);
     setUserId(null);
     setHabits([]);
@@ -262,7 +301,6 @@ const App: React.FC = () => {
         skipped_dates: []
     }]).select().single();
 
-    // Replace temp ID with real DB ID if needed, or strictly use DB response
     if (data) {
         setHabits(prev => prev.map(h => h.id === newHabit.id ? { ...h, id: data.id } : h));
     }

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { ArrowRight, Lock, KeyRound } from 'lucide-react';
+import { supabase } from '../services/supabase';
 
 interface AuthProps {
   onLogin: (username: string, pin: string, isRegistering: boolean) => void;
@@ -9,6 +10,7 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
   const [username, setUsername] = useState('');
   const [pin, setPin] = useState('');
   const [isLogin, setIsLogin] = useState(true);
+  const [loading, setLoading] = useState(false);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -30,6 +32,23 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
     setPin(value);
   };
 
+  const handleGoogleLogin = async () => {
+    setLoading(true);
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          // Redirect to the current URL after login
+          redirectTo: window.location.origin 
+        }
+      });
+      if (error) throw error;
+    } catch (error: any) {
+      alert("Error logging in with Google: " + error.message);
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#F7F7F5] flex items-center justify-center p-4">
       <div className="bg-white w-full max-w-md rounded-xl border border-[#E0E0E0] shadow-xl overflow-hidden p-8">
@@ -41,6 +60,22 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
           <p className="text-[#787774] mt-2 text-center">
             {isLogin ? "Enter your credentials to continue." : "Set up your secure profile."}
           </p>
+        </div>
+
+        {/* Google Button */}
+        <button
+          onClick={handleGoogleLogin}
+          disabled={loading}
+          className="w-full bg-white border border-[#E0E0E0] hover:bg-[#FAFAFA] text-[#37352F] font-medium py-3 rounded-lg transition-all flex items-center justify-center gap-3 shadow-sm mb-6 relative"
+        >
+          <img src="https://www.svgrepo.com/show/475656/google-color.svg" className="w-5 h-5" alt="Google" />
+          <span>{loading ? 'Connecting...' : 'Continue with Google'}</span>
+        </button>
+
+        <div className="relative flex py-2 items-center mb-6">
+            <div className="flex-grow border-t border-[#E0E0E0]"></div>
+            <span className="flex-shrink-0 mx-4 text-gray-400 text-xs">OR USE PIN</span>
+            <div className="flex-grow border-t border-[#E0E0E0]"></div>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -55,7 +90,6 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
                 onChange={(e) => setUsername(e.target.value)}
                 placeholder="Enter your username"
                 className="w-full pl-10 pr-4 py-3 rounded-lg border border-[#E0E0E0] focus:outline-none focus:border-[#37352F] focus:ring-1 focus:ring-[#37352F] transition-all bg-[#FAFAFA] focus:bg-white"
-                autoFocus
               />
               <Lock className="absolute left-3 top-3.5 text-[#9B9B9B]" size={18} />
             </div>
@@ -101,10 +135,6 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
           >
             {isLogin ? "New here? Create an account" : "Already have an account? Sign in"}
           </button>
-        </div>
-        
-        <div className="mt-8 pt-6 border-t border-[#F0F0F0] text-xs text-[#9B9B9B] text-center">
-          Data is stored locally on your device.
         </div>
       </div>
     </div>
