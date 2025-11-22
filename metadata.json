@@ -1,0 +1,5 @@
+{
+  "name": "HabitFlow",
+  "description": "A minimalist, Notion-style habit tracker with daily, weekly, and monthly views, analytics, and AI-powered insights.",
+  "requestFramePermissions": []
+}
