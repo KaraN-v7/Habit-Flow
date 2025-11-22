@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+// App.tsx
+import React, { useEffect, useState } from 'react';
 import Sidebar from './components/Sidebar';
 import DailyView from './components/DailyView';
 import WeeklyView from './components/WeeklyView';
@@ -23,15 +24,9 @@ const App: React.FC = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [selectedDate, setSelectedDate] = useState(new Date());
-  
-  // Delete State
-  const [deleteContext, setDeleteContext] = useState<{ 
-      habit: Habit, 
-      source: 'daily' | 'weekly' | 'monthly', 
-      date?: string 
-  } | null>(null);
-  
-  // Dark mode state
+  const [deleteContext, setDeleteContext] = useState<{ habit: Habit, source: 'daily'|'weekly'|'monthly', date?: string } | null>(null);
+
+  // Dark mode
   const [isDarkMode, setIsDarkMode] = useState(() => {
     if (typeof window !== 'undefined') {
       const stored = localStorage.getItem('habitflow_theme');
@@ -53,192 +48,159 @@ const App: React.FC = () => {
   }, [isDarkMode]);
 
   const toggleTheme = () => setIsDarkMode(prev => !prev);
+  const goToPrevDay = () => { const d = new Date(selectedDate); d.setDate(d.getDate()-1); setSelectedDate(d); };
+  const goToNextDay = () => { const d = new Date(selectedDate); d.setDate(d.getDate()+1); setSelectedDate(d); };
 
-  const goToPrevDay = () => {
-    const newDate = new Date(selectedDate);
-    newDate.setDate(selectedDate.getDate() - 1);
-    setSelectedDate(newDate);
+  // Load habits & chapters for user
+  const loadUserData = async (uid: string) => {
+    try {
+      const { data: habitsData, error: habErr } = await supabase.from('habits').select('*').eq('user_id', uid);
+      if (habErr) console.error('fetch habits error', habErr);
+      if (habitsData) {
+        const mapped: Habit[] = habitsData.map((h: any) => ({
+          id: h.id,
+          name: h.name,
+          emoji: h.emoji,
+          frequency: h.frequency,
+          period: h.period,
+          specificDate: h.specific_date,
+          category: h.category,
+          streak: h.streak,
+          completedDates: h.completed_dates || [],
+          createdAt: h.created_at,
+          weeklyGoal: h.weekly_goal,
+          monthlyGoal: h.monthly_goal,
+          points: h.points,
+          skippedDates: h.skipped_dates || []
+        }));
+        setHabits(mapped);
+      }
+
+      const { data: chaptersData, error: chapErr } = await supabase.from('chapters').select('*').eq('user_id', uid);
+      if (chapErr) console.error('fetch chapters error', chapErr);
+      if (chaptersData) {
+        const mappedChapters: Chapter[] = chaptersData.map((c: any) => ({
+          id: c.id,
+          name: c.name,
+          subject: c.subject,
+          isCompleted: c.is_completed
+        }));
+        setChapters(mappedChapters);
+      }
+    } catch (e) {
+      console.error('loadUserData error', e);
+    }
   };
 
-  const goToNextDay = () => {
-    const newDate = new Date(selectedDate);
-    newDate.setDate(selectedDate.getDate() + 1);
-    setSelectedDate(newDate);
+  // Create profile row if not present and then load data
+  const ensureProfileAndLoad = async (uid: string, supaUser: any) => {
+    try {
+      const { data: customUser, error: fetchErr } = await supabase.from('users').select('*').eq('id', uid).single();
+      let profile = customUser;
+
+      if (!profile) {
+        const meta = supaUser.user_metadata || {};
+        const email = supaUser.email ?? null;
+        const usernameGuess =
+          (meta.full_name && meta.full_name.replace(/\s+/g, '').toLowerCase()) ||
+          (email ? email.split('@')[0] : `user-${uid.slice(0,8)}`);
+
+        const { data: inserted, error: insErr } = await supabase.from('users').insert([{
+          id: uid,
+          username: usernameGuess,
+          email,
+          avatar: meta.picture ?? null,
+          joined_at: new Date().toISOString(),
+          badges: [],
+          total_streak_points: 0
+        }]).select().single();
+
+        if (insErr) {
+          console.error('Failed to insert profile', insErr);
+        } else {
+          profile = inserted;
+        }
+      }
+
+      if (profile) {
+        const userProfile: User = {
+          username: profile.username,
+          joinedAt: profile.joined_at,
+          badges: profile.badges || [],
+          totalStreakPoints: profile.total_streak_points || 0,
+          pin: profile.pin ?? undefined,
+          avatar: profile.avatar ?? undefined,
+          email: profile.email ?? undefined,
+          phone: profile.phone ?? undefined
+        };
+        setUser(userProfile);
+        setUserId(uid);
+        localStorage.setItem('habitflow_session_user', JSON.stringify({ user: userProfile, id: uid }));
+        loadUserData(uid);
+      }
+    } catch (err) {
+      console.error('ensureProfileAndLoad error', err);
+    }
   };
 
-  // Check for existing session on mount AND listen for Auth changes (Google Login)
+  // On mount: handle OAuth redirect token and listen for auth state changes
   useEffect(() => {
-    // 1. Check Local Storage first (for fast PIN login)
-    const storedSession = localStorage.getItem('habitflow_session_user');
-    if (storedSession) {
-        const parsed = JSON.parse(storedSession);
-        setUser(parsed.user);
-        setUserId(parsed.id);
-        loadUserData(parsed.id);
+    (async () => {
+      try {
+        if (typeof window !== 'undefined') {
+          // If tokens are in the URL after OAuth redirect, let Supabase store the session
+          const hasHash = window.location.hash?.includes('access_token');
+          const hasQuery = window.location.search?.includes('access_token');
+          if (hasHash || hasQuery) {
+            const { error } = await supabase.auth.getSessionFromUrl({ storeSession: true });
+            if (error) console.error('getSessionFromUrl error', error);
+            // remove tokens from URL to clean up
+            const cleanUrl = window.location.origin + window.location.pathname;
+            window.history.replaceState({}, document.title, cleanUrl);
+          }
+        }
+      } catch (err) {
+        console.error('Error while processing OAuth redirect:', err);
+      }
+    })();
+
+    // Fast path: load cached profile if present (keeps UI snappy)
+    const stored = localStorage.getItem('habitflow_session_user');
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      setUser(parsed.user);
+      setUserId(parsed.id);
+      loadUserData(parsed.id);
     }
 
-    // 2. Listen for Supabase Auth events (Google Redirects)
+    // Subscribe to Supabase auth events
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-        if (event === 'SIGNED_IN' && session) {
-            // User logged in via Google/Auth
-            const uid = session.user.id;
-            
-            // Fetch the custom user profile that corresponds to this Auth user
-            const { data: customUser, error } = await supabase
-                .from('users')
-                .select('*')
-                .eq('id', uid)
-                .single();
-
-            if (customUser && !error) {
-                const userProfile: User = {
-                    username: customUser.username,
-                    joinedAt: customUser.joined_at,
-                    badges: customUser.badges || [],
-                    totalStreakPoints: customUser.total_streak_points || 0,
-                    pin: customUser.pin,
-                    avatar: customUser.avatar,
-                    email: customUser.email,
-                    phone: customUser.phone
-                };
-                
-                setUser(userProfile);
-                setUserId(uid);
-                localStorage.setItem('habitflow_session_user', JSON.stringify({ user: userProfile, id: uid }));
-                loadUserData(uid);
-            }
+      try {
+        if (event === 'SIGNED_IN' && session?.user) {
+          await ensureProfileAndLoad(session.user.id, session.user);
         } else if (event === 'SIGNED_OUT') {
-            handleLogout();
+          // clear local state
+          setUser(null);
+          setUserId(null);
+          setHabits([]);
+          setChapters([]);
+          localStorage.removeItem('habitflow_session_user');
+          setView('daily');
         }
+      } catch (e) {
+        console.error('onAuthStateChange handler error', e);
+      }
     });
 
     return () => subscription.unsubscribe();
   }, []);
 
-  const loadUserData = async (uid: string) => {
-    // Load Habits from Supabase
-    const { data: habitsData } = await supabase
-        .from('habits')
-        .select('*')
-        .eq('user_id', uid);
-    
-    if (habitsData) {
-        const mappedHabits: Habit[] = habitsData.map((h: any) => ({
-            id: h.id,
-            name: h.name,
-            emoji: h.emoji,
-            frequency: h.frequency,
-            period: h.period,
-            specificDate: h.specific_date,
-            category: h.category,
-            streak: h.streak,
-            completedDates: h.completed_dates || [],
-            createdAt: h.created_at,
-            weeklyGoal: h.weekly_goal,
-            monthlyGoal: h.monthly_goal,
-            points: h.points,
-            skippedDates: h.skipped_dates || []
-        }));
-        setHabits(mappedHabits);
-    }
-
-    // Load Chapters
-    const { data: chaptersData } = await supabase
-        .from('chapters')
-        .select('*')
-        .eq('user_id', uid);
-
-    if (chaptersData) {
-        const mappedChapters: Chapter[] = chaptersData.map((c: any) => ({
-            id: c.id,
-            name: c.name,
-            subject: c.subject,
-            isCompleted: c.is_completed
-        }));
-        setChapters(mappedChapters);
-    }
-  };
-
-  const handleLogin = async (username: string, pin: string, isRegistering: boolean) => {
-    try {
-        if (isRegistering) {
-            // Check if exists
-            const { data: existing } = await supabase.from('users').select('id').eq('username', username).single();
-            if (existing) {
-                alert("Username already exists!");
-                return;
-            }
-
-            // Insert new user
-            const { data: newUser, error } = await supabase
-                .from('users')
-                .insert([{ 
-                    username, 
-                    pin, 
-                    joined_at: new Date().toISOString(),
-                    badges: [],
-                    total_streak_points: 0 
-                }])
-                .select()
-                .single();
-
-            if (error) throw error;
-
-            const userProfile: User = {
-                username: newUser.username,
-                joinedAt: newUser.joined_at,
-                badges: newUser.badges || [],
-                totalStreakPoints: newUser.total_streak_points || 0,
-                pin: newUser.pin,
-                avatar: newUser.avatar
-            };
-
-            setUser(userProfile);
-            setUserId(newUser.id);
-            localStorage.setItem('habitflow_session_user', JSON.stringify({ user: userProfile, id: newUser.id }));
-            
-        } else {
-            // Login
-            const { data: existingUser, error } = await supabase
-                .from('users')
-                .select('*')
-                .eq('username', username)
-                .single();
-            
-            if (error || !existingUser) {
-                alert("User not found!");
-                return;
-            }
-
-            if (existingUser.pin !== pin) {
-                alert("Incorrect PIN!");
-                return;
-            }
-
-            const userProfile: User = {
-                username: existingUser.username,
-                joinedAt: existingUser.joined_at,
-                badges: existingUser.badges || [],
-                totalStreakPoints: existingUser.total_streak_points || 0,
-                pin: existingUser.pin,
-                avatar: existingUser.avatar,
-                email: existingUser.email,
-                phone: existingUser.phone
-            };
-
-            setUser(userProfile);
-            setUserId(existingUser.id);
-            localStorage.setItem('habitflow_session_user', JSON.stringify({ user: userProfile, id: existingUser.id }));
-            loadUserData(existingUser.id);
-        }
-    } catch (err) {
-        console.error(err);
-        alert("An error occurred connecting to the database.");
-    }
-  };
-
   const handleLogout = async () => {
-    await supabase.auth.signOut();
+    try {
+      await supabase.auth.signOut();
+    } catch (err) {
+      console.error('signOut error', err);
+    }
     setUser(null);
     setUserId(null);
     setHabits([]);
@@ -248,187 +210,104 @@ const App: React.FC = () => {
   };
 
   const handleUpdateUser = async (updatedUser: User) => {
-      if (!userId) return;
-      setUser(updatedUser);
-      
-      // Optimistic update local
-      localStorage.setItem('habitflow_session_user', JSON.stringify({ user: updatedUser, id: userId }));
-
-      // Sync to Supabase
-      await supabase.from('users').update({
-          email: updatedUser.email,
-          phone: updatedUser.phone,
-          avatar: updatedUser.avatar
-      }).eq('id', userId);
-  };
-
-  // Adds a RECURRING habit (Weekly/Monthly view)
-  const addRecurringHabit = async (name: string, emoji: string, category: string, weeklyGoal: number, monthlyGoal: number, points: number, period: 'weekly' | 'monthly') => {
     if (!userId) return;
-
-    const newHabit: Habit = {
-      id: crypto.randomUUID(), // Temporary ID, usually DB assigns, but we use UUIDs
-      name,
-      emoji,
-      frequency: 'daily',
-      period,
-      category,
-      streak: 0,
-      completedDates: [],
-      createdAt: new Date().toISOString(),
-      weeklyGoal,
-      monthlyGoal,
-      points: 0,
-      skippedDates: []
-    };
-
-    // Update Local
-    setHabits([...habits, newHabit]);
-
-    // Update DB
-    const { data, error } = await supabase.from('habits').insert([{
-        user_id: userId,
-        name,
-        emoji,
-        category,
-        frequency: 'daily',
-        period,
-        weekly_goal: weeklyGoal,
-        monthly_goal: monthlyGoal,
-        points: 0,
-        streak: 0,
-        completed_dates: [],
-        skipped_dates: []
-    }]).select().single();
-
-    if (data) {
-        setHabits(prev => prev.map(h => h.id === newHabit.id ? { ...h, id: data.id } : h));
-    }
+    setUser(updatedUser);
+    localStorage.setItem('habitflow_session_user', JSON.stringify({ user: updatedUser, id: userId }));
+    await supabase.from('users').update({
+      email: updatedUser.email,
+      phone: updatedUser.phone,
+      avatar: updatedUser.avatar
+    }).eq('id', userId);
   };
 
-  // Adds a ONE-TIME task (Daily view)
+  // Reuse your existing logic (insert/update/delete habits & chapters)
+  // addRecurringHabit
+  const addRecurringHabit = async (
+    name: string, emoji: string, category: string, weeklyGoal: number, monthlyGoal: number, points: number, period: 'weekly'|'monthly'
+  ) => {
+    if (!userId) return;
+    const newHabit: Habit = {
+      id: crypto.randomUUID(),
+      name, emoji, frequency: 'daily', period, category, streak: 0,
+      completedDates: [], createdAt: new Date().toISOString(), weeklyGoal, monthlyGoal, points: 0, skippedDates: []
+    };
+    setHabits(prev => [...prev, newHabit]);
+    const { data, error } = await supabase.from('habits').insert([{
+      user_id: userId, name, emoji, category, frequency: 'daily', period, weekly_goal: weeklyGoal, monthly_goal: monthlyGoal, points: 0, streak: 0, completed_dates: [], skipped_dates: []
+    }]).select().single();
+    if (error) console.error('insert habit error', error);
+    if (data) setHabits(prev => prev.map(h => h.id === newHabit.id ? { ...h, id: data.id } : h));
+  };
+
+  // addOneTimeTask
   const addOneTimeTask = async (name: string, date: string) => {
     if (!userId) return;
-
-    const newHabit: Habit = {
-      id: crypto.randomUUID(),
-      name,
-      emoji: '📝',
-      frequency: 'daily',
-      category: 'Daily Task',
-      streak: 0,
-      completedDates: [],
-      createdAt: new Date().toISOString(),
-      weeklyGoal: 0,
-      monthlyGoal: 0,
-      points: 0,
-      specificDate: date,
-      skippedDates: []
-    };
-
-    setHabits([...habits, newHabit]);
-
-    const { data } = await supabase.from('habits').insert([{
-        user_id: userId,
-        name,
-        emoji: '📝',
-        category: 'Daily Task',
-        frequency: 'daily',
-        specific_date: date,
-        streak: 0,
-        completed_dates: [],
-        skipped_dates: []
+    const newHabit: Habit = { id: crypto.randomUUID(), name, emoji: '📝', frequency: 'daily', category: 'Daily Task', streak:0, completedDates:[], createdAt:new Date().toISOString(), weeklyGoal:0, monthlyGoal:0, points:0, specificDate: date, skippedDates: [] };
+    setHabits(prev => [...prev, newHabit]);
+    const { data, error } = await supabase.from('habits').insert([{
+      user_id: userId, name, emoji: '📝', category: 'Daily Task', frequency: 'daily', specific_date: date, streak: 0, completed_dates: [], skipped_dates: []
     }]).select().single();
+    if (error) console.error('insert one-time task error', error);
+    if (data) setHabits(prev => prev.map(h => h.id === newHabit.id ? { ...h, id: data.id } : h));
+  };
 
-    if (data) {
-        setHabits(prev => prev.map(h => h.id === newHabit.id ? { ...h, id: data.id } : h));
-    }
-  }
-
-  const addChapter = async (name: string, subject: 'Physics' | 'Chemistry' | 'Mathematics') => {
+  // addChapter
+  const addChapter = async (name: string, subject: 'Physics'|'Chemistry'|'Mathematics') => {
     if (!userId) return;
-    
-    const newChapter: Chapter = {
-      id: crypto.randomUUID(),
-      name,
-      subject,
-      isCompleted: false
-    };
-    setChapters([...chapters, newChapter]);
-
-    const { data } = await supabase.from('chapters').insert([{
-        user_id: userId,
-        name,
-        subject,
-        is_completed: false
+    const newChapter: Chapter = { id: crypto.randomUUID(), name, subject, isCompleted: false };
+    setChapters(prev => [...prev, newChapter]);
+    const { data, error } = await supabase.from('chapters').insert([{
+      user_id: userId, name, subject, is_completed: false
     }]).select().single();
-
-    if (data) {
-        setChapters(prev => prev.map(c => c.id === newChapter.id ? { ...c, id: data.id } : c));
-    }
+    if (error) console.error('insert chapter error', error);
+    if (data) setChapters(prev => prev.map(c => c.id === newChapter.id ? { ...c, id: data.id } : c));
   };
 
   const deleteChapter = async (id: string) => {
     if (!userId) return;
-    setChapters(chapters.filter(c => c.id !== id));
+    setChapters(prev => prev.filter(c => c.id !== id));
     await supabase.from('chapters').delete().eq('id', id);
   };
 
+  // gamification / badges
   const updateBadgesAndPoints = async (currentUser: User, currentUserId: string, currentHabits: Habit[], currentChapters: Chapter[]) => {
-      const badgesToUpdate = checkNewBadges(currentUser, currentHabits, currentChapters);
-      let updatedUser = { ...currentUser };
-      let hasUpdates = false;
-
-      if (badgesToUpdate.length > 0) {
-          const currentBadges = [...currentUser.badges];
-          const newBadgesList: Badge[] = [];
-          
-          badgesToUpdate.forEach(nb => {
-              const existingIndex = currentBadges.findIndex(b => b.key === nb.key);
-              if (existingIndex >= 0) {
-                   if ((nb.count || 1) > (currentBadges[existingIndex].count || 1)) {
-                       currentBadges[existingIndex] = nb;
-                       newBadgesList.push(nb);
-                   }
-              } else {
-                  currentBadges.push(nb);
-                  newBadgesList.push(nb);
-              }
-          });
-          
-          if (newBadgesList.length > 0) {
-             alert(`🎉 Badge Unlocked: ${newBadgesList[0].name} ${newBadgesList[0].count && newBadgesList[0].count > 1 ? `(x${newBadgesList[0].count})` : ''}!`);
-             updatedUser.badges = currentBadges;
-             hasUpdates = true;
+    const badgesToUpdate = checkNewBadges(currentUser, currentHabits, currentChapters);
+    let updatedUser = { ...currentUser };
+    let hasUpdates = false;
+    if (badgesToUpdate.length > 0) {
+      const currentBadges = [...currentUser.badges];
+      const newBadgesList: Badge[] = [];
+      badgesToUpdate.forEach(nb => {
+        const existingIndex = currentBadges.findIndex(b => b.key === nb.key);
+        if (existingIndex >= 0) {
+          if ((nb.count || 1) > (currentBadges[existingIndex].count || 1)) {
+            currentBadges[existingIndex] = nb;
+            newBadgesList.push(nb);
           }
+        } else {
+          currentBadges.push(nb);
+          newBadgesList.push(nb);
+        }
+      });
+      if (newBadgesList.length > 0) {
+        alert(`🎉 Badge Unlocked: ${newBadgesList[0].name}!`);
+        updatedUser.badges = currentBadges;
+        hasUpdates = true;
       }
-
-      if (hasUpdates || updatedUser.totalStreakPoints !== currentUser.totalStreakPoints) {
-          setUser(updatedUser);
-          localStorage.setItem('habitflow_session_user', JSON.stringify({ user: updatedUser, id: currentUserId }));
-          
-          await supabase.from('users').update({
-              badges: updatedUser.badges,
-              total_streak_points: updatedUser.totalStreakPoints
-          }).eq('id', currentUserId);
-      }
+    }
+    if (hasUpdates || updatedUser.totalStreakPoints !== currentUser.totalStreakPoints) {
+      setUser(updatedUser);
+      localStorage.setItem('habitflow_session_user', JSON.stringify({ user: updatedUser, id: currentUserId }));
+      await supabase.from('users').update({ badges: updatedUser.badges, total_streak_points: updatedUser.totalStreakPoints }).eq('id', currentUserId);
+    }
   };
 
   const toggleChapterCompletion = async (id: string) => {
     if (!user || !userId) return;
-
-    const updatedChapters = chapters.map(c => 
-      c.id === id ? { ...c, isCompleted: !c.isCompleted } : c
-    );
+    const updatedChapters = chapters.map(c => c.id === id ? { ...c, isCompleted: !c.isCompleted } : c);
     setChapters(updatedChapters);
-
-    // DB Update
     const target = updatedChapters.find(c => c.id === id);
-    if (target) {
-        await supabase.from('chapters').update({ is_completed: target.isCompleted }).eq('id', id);
-    }
-    
-    // Check Badges
+    if (target) await supabase.from('chapters').update({ is_completed: target.isCompleted }).eq('id', id);
     await updateBadgesAndPoints(user, userId, habits, updatedChapters);
   };
 
@@ -441,17 +320,13 @@ const App: React.FC = () => {
 
   const toggleHabit = async (id: string, date: string) => {
     if (!user || !userId) return;
-
     let pointsDelta = 0;
     let targetHabit: Habit | undefined;
-
     const updatedHabits = habits.map(habit => {
       if (habit.id !== id) return habit;
-
       const isCompleted = habit.completedDates.includes(date);
       let newCompletedDates;
       let newStreak = 0;
-      
       if (isCompleted) {
         const currentStreak = calculateCurrentStreak(habit.completedDates);
         if (currentStreak > 1) pointsDelta = -1;
@@ -462,163 +337,68 @@ const App: React.FC = () => {
         newStreak = calculateCurrentStreak(newCompletedDates);
         if (newStreak > 1) pointsDelta = 1;
       }
-
-      const updated = {
-        ...habit,
-        completedDates: newCompletedDates,
-        streak: newStreak
-      };
+      const updated = { ...habit, completedDates: newCompletedDates, streak: newStreak };
       targetHabit = updated;
       return updated;
     });
-
     setHabits(updatedHabits);
-
     if (targetHabit) {
-        await supabase.from('habits').update({
-            completed_dates: targetHabit.completedDates,
-            streak: targetHabit.streak
-        }).eq('id', id);
+      await supabase.from('habits').update({ completed_dates: targetHabit.completedDates, streak: targetHabit.streak }).eq('id', id);
     }
-
-    // Update User Points
     const updatedUser = { ...user, totalStreakPoints: Math.max(0, (user.totalStreakPoints || 0) + pointsDelta) };
     await updateBadgesAndPoints(updatedUser, userId, updatedHabits, chapters);
   };
 
-  const promptDeleteHabit = (habitId: string, source: 'daily' | 'weekly' | 'monthly', date?: string) => {
+  const promptDeleteHabit = (habitId: string, source: 'daily'|'weekly'|'monthly', date?: string) => {
     const habit = habits.find(h => h.id === habitId);
-    if (habit) {
-      setDeleteContext({ habit, source, date });
-    }
+    if (habit) setDeleteContext({ habit, source, date });
   };
 
   const confirmDeleteHabit = async () => {
     if (!deleteContext || !userId) return;
     const { habit, source, date } = deleteContext;
-
     if (source === 'daily' && date && !habit.specificDate) {
-        // Skip Logic
-        const updatedHabits = habits.map(h => {
-            if (h.id === habit.id) {
-                return {
-                    ...h,
-                    skippedDates: [...(h.skippedDates || []), date]
-                };
-            }
-            return h;
-        });
-        setHabits(updatedHabits);
-
-        // DB Update
-        const target = updatedHabits.find(h => h.id === habit.id);
-        if (target) {
-            await supabase.from('habits').update({
-                skipped_dates: target.skippedDates
-            }).eq('id', habit.id);
-        }
-    } 
-    else {
-        // Full Delete Logic
-        setHabits(habits.filter(h => h.id !== habit.id));
-        await supabase.from('habits').delete().eq('id', habit.id);
+      const updatedHabits = habits.map(h => h.id === habit.id ? { ...h, skippedDates: [...(h.skippedDates || []), date] } : h);
+      setHabits(updatedHabits);
+      const target = updatedHabits.find(h => h.id === habit.id);
+      if (target) await supabase.from('habits').update({ skipped_dates: target.skippedDates }).eq('id', habit.id);
+    } else {
+      setHabits(prev => prev.filter(h => h.id !== habit.id));
+      await supabase.from('habits').delete().eq('id', habit.id);
     }
-    
     setDeleteContext(null);
   };
 
   const getDeleteMessage = () => {
-      if (!deleteContext) return undefined;
-      const { habit, source } = deleteContext;
-      if (source === 'daily' && !habit.specificDate) {
-          return `Remove "${habit.name}" from today's list? It will remain active for other days.`;
-      }
-      return undefined;
+    if (!deleteContext) return undefined;
+    const { habit, source } = deleteContext;
+    if (source === 'daily' && !habit.specificDate) return `Remove "${habit.name}" from today's list? It will remain active for other days.`;
+    return undefined;
   };
 
   const renderContent = () => {
     switch (view) {
-      case 'daily':
-        return <DailyView 
-          habits={habits} 
-          toggleHabit={toggleHabit} 
-          selectedDate={selectedDate}
-          onPrevDay={goToPrevDay}
-          onNextDay={goToNextDay}
-          onAddOneTimeTask={addOneTimeTask}
-          onDeleteHabit={(id) => promptDeleteHabit(id, 'daily', selectedDate.toLocaleDateString('en-CA'))}
-        />;
-      case 'weekly':
-        return <WeeklyView habits={habits} toggleHabit={toggleHabit} onDeleteHabit={(id) => promptDeleteHabit(id, 'weekly')} />;
-      case 'monthly':
-        return <MonthlyView habits={habits} toggleHabit={toggleHabit} currentDate={selectedDate} onDeleteHabit={(id) => promptDeleteHabit(id, 'monthly')} />;
-      case 'syllabus':
-        return <SyllabusView 
-            chapters={chapters} 
-            onAddChapter={addChapter} 
-            onPushToDaily={pushChapterToDaily}
-            onDeleteChapter={deleteChapter}
-            onToggleComplete={toggleChapterCompletion}
-            selectedDate={selectedDate}
-        />;
-      case 'analytics':
-        return <Analytics habits={habits} user={user} chapters={chapters} />;
-      case 'coach':
-        return <Coach habits={habits} />;
-      default:
-        return <DailyView 
-          habits={habits} 
-          toggleHabit={toggleHabit} 
-          selectedDate={selectedDate}
-          onPrevDay={goToPrevDay}
-          onNextDay={goToNextDay}
-          onAddOneTimeTask={addOneTimeTask}
-          onDeleteHabit={(id) => promptDeleteHabit(id, 'daily', selectedDate.toLocaleDateString('en-CA'))}
-        />;
+      case 'daily': return <DailyView habits={habits} toggleHabit={toggleHabit} selectedDate={selectedDate} onPrevDay={goToPrevDay} onNextDay={goToNextDay} onAddOneTimeTask={addOneTimeTask} onDeleteHabit={(id) => promptDeleteHabit(id, 'daily', selectedDate.toLocaleDateString('en-CA'))} />;
+      case 'weekly': return <WeeklyView habits={habits} toggleHabit={toggleHabit} onDeleteHabit={(id) => promptDeleteHabit(id, 'weekly')} />;
+      case 'monthly': return <MonthlyView habits={habits} toggleHabit={toggleHabit} currentDate={selectedDate} onDeleteHabit={(id) => promptDeleteHabit(id, 'monthly')} />;
+      case 'syllabus': return <SyllabusView chapters={chapters} onAddChapter={addChapter} onPushToDaily={pushChapterToDaily} onDeleteChapter={deleteChapter} onToggleComplete={toggleChapterCompletion} selectedDate={selectedDate} />;
+      case 'analytics': return <Analytics habits={habits} user={user} chapters={chapters} />;
+      case 'coach': return <Coach habits={habits} />;
+      default: return <DailyView habits={habits} toggleHabit={toggleHabit} selectedDate={selectedDate} onPrevDay={goToPrevDay} onNextDay={goToNextDay} onAddOneTimeTask={addOneTimeTask} onDeleteHabit={(id) => promptDeleteHabit(id, 'daily', selectedDate.toLocaleDateString('en-CA'))} />;
     }
   };
 
-  if (!user) {
-    return <Auth onLogin={handleLogin} />;
-  }
+  // If not logged in show ONLY Google auth
+  if (!user) return <Auth />;
 
   return (
     <div className="flex flex-col md:flex-row h-screen bg-[#F7F7F5] dark:bg-[#191919] overflow-hidden transition-colors duration-300">
-      <Sidebar 
-        currentView={view} 
-        setView={setView} 
-        onAddHabit={() => setIsModalOpen(true)} 
-        user={user}
-        onLogout={handleLogout}
-        isDarkMode={isDarkMode}
-        toggleTheme={toggleTheme}
-        onOpenProfile={() => setIsProfileOpen(true)}
-      />
-      
-      <main className="flex-1 overflow-y-auto p-4 md:p-10 relative">
-        {renderContent()}
-      </main>
+      <Sidebar currentView={view} setView={setView} onAddHabit={() => setIsModalOpen(true)} user={user} onLogout={handleLogout} isDarkMode={isDarkMode} toggleTheme={toggleTheme} onOpenProfile={() => setIsProfileOpen(true)} />
+      <main className="flex-1 overflow-y-auto p-4 md:p-10 relative">{renderContent()}</main>
 
-      <AddHabitModal 
-        isOpen={isModalOpen} 
-        onClose={() => setIsModalOpen(false)} 
-        onSave={addRecurringHabit} 
-      />
-
-      <ProfileModal 
-        isOpen={isProfileOpen}
-        onClose={() => setIsProfileOpen(false)}
-        user={user}
-        onUpdateUser={handleUpdateUser}
-      />
-
-      <ConfirmDeleteModal
-        isOpen={!!deleteContext}
-        onClose={() => setDeleteContext(null)}
-        onConfirm={confirmDeleteHabit}
-        habitName={deleteContext?.habit.name || ''}
-        message={getDeleteMessage()}
-      />
+      <AddHabitModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} onSave={addRecurringHabit} />
+      <ProfileModal isOpen={isProfileOpen} onClose={() => setIsProfileOpen(false)} user={user} onUpdateUser={handleUpdateUser} />
+      <ConfirmDeleteModal isOpen={!!deleteContext} onClose={() => setDeleteContext(null)} onConfirm={confirmDeleteHabit} habitName={deleteContext?.habit.name || ''} message={getDeleteMessage()} />
     </div>
   );
 };
