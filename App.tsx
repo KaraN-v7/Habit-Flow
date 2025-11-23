@@ -145,35 +145,87 @@ const App: React.FC = () => {
     }
   };
 
-  // ---------- Auth init (handles OAuth callback explicitly) ----------
-  useEffect(() => {
-    let cancelled = false;
-    const init = async () => {
-      setIsAuthLoading(true);
-      try {
-        if (typeof window !== 'undefined') {
-          const hasHash = !!window.location.hash && window.location.hash.includes('access_token');
-          const hasQuery = !!window.location.search && window.location.search.includes('access_token');
-          if (hasHash || hasQuery) {
-            console.log('[AuthInit] tokens detected in URL — calling getSessionFromUrl');
-            // storeSession=true will persist session in localStorage via the client
-            const { error } = await supabase.auth.getSessionFromUrl({ storeSession: true });
-            if (error) console.error('getSessionFromUrl error', error);
-            // cleanup URL (remove fragment/query tokens)
-            const clean = window.location.origin + window.location.pathname + window.location.search;
-            window.history.replaceState({}, document.title, clean);
+  // Replace your current auth-init useEffect with this block
+useEffect(() => {
+  let cancelled = false;
+
+  const parseHashTokens = (hash: string) => {
+    // Parse a URL fragment like "#access_token=...&refresh_token=...&expires_at=..."
+    const trimmed = hash.startsWith('#') ? hash.slice(1) : hash;
+    const params = new URLSearchParams(trimmed);
+    const access_token = params.get('access_token');
+    const refresh_token = params.get('refresh_token');
+    const expires_at = params.get('expires_at');
+    return { access_token, refresh_token, expires_at };
+  };
+
+  const initAuth = async () => {
+    setIsAuthLoading(true);
+    try {
+      if (typeof window !== 'undefined') {
+        const hasHash = !!window.location.hash && window.location.hash.includes('access_token');
+        const hasQuery = !!window.location.search && window.location.search.includes('access_token');
+
+        if (hasHash || hasQuery) {
+          // 1) Prefer built-in helper if available
+          try {
+            // @ts-ignore - method may not exist depending on supabase-js version
+            if (typeof supabase.auth.getSessionFromUrl === 'function') {
+              console.log('[AuthInit] calling supabase.auth.getSessionFromUrl()');
+              // storeSession: true persists to localStorage
+              // If this method exists it will handle validation + storage
+              const result = await (supabase.auth as any).getSessionFromUrl({ storeSession: true });
+              console.log('[AuthInit] getSessionFromUrl result', result);
+            } else {
+              // 2) Fallback: parse URL fragment and set session manually
+              console.log('[AuthInit] getSessionFromUrl not available — using fallback parser');
+              const tokens = parseHashTokens(window.location.hash || window.location.search || '');
+              if (tokens.access_token) {
+                // try to set session (v2 clients have setSession)
+                try {
+                  // @ts-ignore
+                  if (typeof supabase.auth.setSession === 'function') {
+                    await (supabase.auth as any).setSession({
+                      access_token: tokens.access_token,
+                      refresh_token: tokens.refresh_token
+                    });
+                    console.log('[AuthInit] setSession succeeded via fallback tokens');
+                  } else if (typeof supabase.auth.signIn === 'function') {
+                    // older v1 fallback (less common) — try set session via signIn
+                    await (supabase.auth as any).signIn({ provider: 'google' });
+                    console.warn('[AuthInit] used signIn fallback (legacy client) — session may not persist');
+                  } else {
+                    console.error('[AuthInit] no method to set session found on supabase.auth');
+                  }
+                } catch (err) {
+                  console.error('[AuthInit] fallback setSession error', err);
+                }
+              } else {
+                console.warn('[AuthInit] no tokens found in URL to set session with fallback');
+              }
+            }
+          } catch (err) {
+            console.error('[AuthInit] error while handling url tokens', err);
+          } finally {
+            // clean the url to remove tokens (so user doesn't see them)
+            try {
+              const clean = window.location.origin + window.location.pathname + window.location.search;
+              window.history.replaceState({}, document.title, clean);
+            } catch (err) { /* ignore */ }
           }
         }
+      }
 
-        // ask supabase for the active session
+      // Finally, ask supabase client for currently stored session (if any)
+      try {
         const { data } = await supabase.auth.getSession();
-        console.log('[AuthInit] getSession:', data);
-        const sess = data.session;
-
-        if (sess?.user) {
+        const sess = data?.session ?? null;
+        console.log('[AuthInit] getSession result', sess);
+        if (sess && sess.user) {
+          // Ensure profile and load DB data (reuse your ensureProfileAndLoad helper)
           await ensureProfileAndLoad(sess.user.id, sess.user);
         } else {
-          // fallback to cached local session (fast UI)
+          // fallback: cached local profile used previously
           const cached = localStorage.getItem('habitflow_session_user');
           if (cached) {
             try {
@@ -181,44 +233,45 @@ const App: React.FC = () => {
               setUser(parsed.user);
               setUserId(parsed.id);
               await loadUserData(parsed.id);
-            } catch (e) {
-              console.warn('cached session parse error', e);
-            }
+            } catch (e) { console.warn('cached session parse error', e); }
           }
         }
       } catch (err) {
-        console.error('Auth init error', err);
-      } finally {
-        if (!cancelled) setIsAuthLoading(false);
+        console.error('[AuthInit] getSession() call failed', err);
       }
-    };
+    } catch (err) {
+      console.error('Auth init outer error', err);
+    } finally {
+      if (!cancelled) setIsAuthLoading(false);
+    }
+  };
 
-    init();
+  init();
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      console.log('[onAuthStateChange]', event);
-      try {
-        if (event === 'SIGNED_IN' && session?.user) {
-          await ensureProfileAndLoad(session.user.id, session.user);
-        } else if (event === 'SIGNED_OUT') {
-          // clear UI state
-          setUser(null);
-          setUserId(null);
-          setHabits([]);
-          setChapters([]);
-          localStorage.removeItem('habitflow_session_user');
-        }
-      } catch (err) {
-        console.error('onAuthStateChange handler error', err);
+  const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+    console.log('[onAuthStateChange]', event, session?.user?.id);
+    try {
+      if (event === 'SIGNED_IN' && session?.user) {
+        await ensureProfileAndLoad(session.user.id, session.user);
+      } else if (event === 'SIGNED_OUT') {
+        setUser(null);
+        setUserId(null);
+        setHabits([]);
+        setChapters([]);
+        localStorage.removeItem('habitflow_session_user');
       }
-    });
+    } catch (err) {
+      console.error('onAuthStateChange handler error', err);
+    }
+  });
 
-    return () => {
-      cancelled = true;
-      subscription.unsubscribe();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  return () => {
+    cancelled = true;
+    subscription.unsubscribe();
+  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, []);
+
 
   // ---------- logout ----------
   const handleLogout = async () => {
